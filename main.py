@@ -7,6 +7,8 @@ import logging
 from database import engine, Base
 from routers import auth, documents, chat
 from config import settings
+from fastapi.staticfiles import StaticFiles
+import os
 
 # Create all DB tables on startup
 Base.metadata.create_all(bind=engine)
@@ -106,3 +108,5 @@ def health_check():
         "database": db_status,
         "chromadb": chroma_status
     }
+if os.path.exists("frontend"):
+    app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")

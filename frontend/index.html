@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DocuMind AI — Login</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="auth-container">
+    <div class="auth-card">
+
+        <div class="logo" style="justify-content:center; margin-bottom:24px;">
+            <div class="logo-icon">🧠</div>
+            DocuMind AI
+        </div>
+
+        <div class="auth-title" style="text-align:center;">Welcome back</div>
+        <div class="auth-subtitle" style="text-align:center;">Sign in to your account</div>
+
+        <div id="alert" class="alert"></div>
+
+        <div class="form-group">
+            <label for="username">Username</label>
+            <input type="text" id="username" placeholder="your username" autocomplete="username">
+        </div>
+
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" placeholder="your password" autocomplete="current-password">
+        </div>
+
+        <button class="btn-primary" id="loginBtn" onclick="login()">
+            Sign in
+        </button>
+
+        <div class="auth-link">
+            Don't have an account? <a href="register.html">Create one</a>
+        </div>
+
+    </div>
+</div>
+
+<script>
+    const API = 'http://localhost:8000';
+
+    // Redirect if already logged in
+    if (localStorage.getItem('token')) {
+        window.location.href = 'dashboard.html';
+    }
+
+    // Allow Enter key to submit
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') login();
+    });
+
+    async function login() {
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value.trim();
+        const btn      = document.getElementById('loginBtn');
+        const alert    = document.getElementById('alert');
+
+        if (!username || !password) {
+            showAlert('Enter your username and password.', 'error');
+            return;
+        }
+
+        btn.disabled    = true;
+        btn.innerHTML   = '<span class="spinner"></span>';
+        alert.className = 'alert';
+
+        try {
+            const res = await fetch(`${API}/users/login`, {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ username, password })
+            });
+
+            const data = await res.json();
+
+            if (!res.ok) {
+                showAlert(data.detail || 'Invalid username or password.', 'error');
+                return;
+            }
+
+            // Save token and username
+            localStorage.setItem('token',    data.access_token);
+            localStorage.setItem('username', username);
+
+            // Redirect to dashboard
+            window.location.href = 'dashboard.html';
+
+        } catch (err) {
+            showAlert('Could not connect to server. Is it running?', 'error');
+        } finally {
+            btn.disabled  = false;
+            btn.innerHTML = 'Sign in';
+        }
+    }
+
+    function showAlert(msg, type) {
+        const el      = document.getElementById('alert');
+        el.textContent = msg;
+        el.className   = `alert ${type}`;
+    }
+</script>
+
+</body>
+</html>

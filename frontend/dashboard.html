@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DocuMind AI</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar">
+    <div class="logo">
+        <div class="logo-icon">🧠</div>
+        DocuMind AI
+    </div>
+    <div class="nav-user">
+        <div class="user-avatar" id="userAvatar">?</div>
+        <span id="usernameDisplay" style="font-size:13px;color:#444441;"></span>
+        <button class="btn-secondary" onclick="logout()">Logout</button>
+    </div>
+</nav>
+
+<!-- Dashboard -->
+<div class="dashboard">
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+
+        <!-- Upload area -->
+        <div class="sidebar-header">
+            <div class="upload-area" id="uploadArea">
+                <input type="file" id="fileInput" accept=".pdf,.txt,.docx" onchange="uploadFile(this)">
+                <div class="upload-icon">📄</div>
+                <div class="upload-text">Drop PDF here</div>
+                <div class="upload-hint">or click to browse</div>
+            </div>
+
+            <div class="upload-progress" id="uploadProgress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-text" id="progressText">Uploading...</div>
+            </div>
+        </div>
+
+        <!-- Document list -->
+        <div class="sidebar-section">
+            <div class="section-label">Your documents</div>
+            <div id="docList">
+                <div class="empty-docs">No documents yet.<br>Upload a PDF to get started.</div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Main area -->
+    <div class="main-area" id="mainArea">
+
+        <!-- No document selected state -->
+        <div class="no-doc-selected" id="noDocSelected">
+            <div class="empty-state-icon">🧠</div>
+            <div class="empty-state-title">Select a document</div>
+            <div class="empty-state-sub">Choose a document from the sidebar<br>or upload a new PDF to start asking questions.</div>
+        </div>
+
+        <!-- Chat interface (hidden until doc selected) -->
+        <div id="chatInterface" style="display:none; flex-direction:column; height:100%;">
+
+            <!-- Chat header -->
+            <div class="chat-header">
+                <div>
+                    <div class="chat-header-title" id="chatDocName">Document name</div>
+                    <div class="chat-header-meta" id="chatDocMeta">0 chunks indexed</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span class="retrieval-score" id="retrievalScore" style="display:none;">
+                        score: —
+                    </span>
+                    <button class="btn-secondary" style="font-size:12px;" onclick="clearChatHistory()">
+                        Clear chat
+                    </button>
+                </div>
+            </div>
+
+            <!-- Messages -->
+            <div class="chat-messages" id="chatMessages">
+                <div class="empty-state" id="chatEmptyState">
+                    <div class="empty-state-icon">💬</div>
+                    <div class="empty-state-title">Ask anything</div>
+                    <div class="empty-state-sub">Ask a question about this document<br>and get an AI-powered answer.</div>
+                </div>
+            </div>
+
+            <!-- Input -->
+            <div class="chat-input-area">
+                <div class="input-row">
+                    <textarea
+                        class="chat-input"
+                        id="questionInput"
+                        placeholder="Ask anything about this document..."
+                        rows="1"
+                        onkeydown="handleKey(event)"
+                        oninput="autoResize(this)"
+                    ></textarea>
+                    <button class="send-btn" id="sendBtn" onclick="askQuestion()">
+                        ➤
+                    </button>
+                </div>
+                <div class="input-hint">Press Enter to send · Shift+Enter for new line</div>
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+<!-- Source panel (slides in from right) -->
+<div class="source-panel" id="sourcePanel">
+    <div class="source-panel-title">
+        Source chunks
+        <button class="btn-secondary" style="font-size:12px;" onclick="closeSourcePanel()">✕ Close</button>
+    </div>
+    <div id="sourcePanelContent"></div>
+</div>
+
+<script>
+const API      = 'http://localhost:8000';
+let token      = localStorage.getItem('token');
+let username   = localStorage.getItem('username');
+let currentDoc = null;
+let polling    = null;
+
+// ── Auth guard ──────────────────────────────────────────
+if (!token) window.location.href = 'index.html';
+
+// ── Init ────────────────────────────────────────────────
+document.getElementById('usernameDisplay').textContent = username;
+document.getElementById('userAvatar').textContent      =
+    username ? username[0].toUpperCase() : '?';
+
+loadDocuments();
+
+// ── Drag and drop ───────────────────────────────────────
+const uploadArea = document.getElementById('uploadArea');
+
+uploadArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadArea.classList.add('dragging');
+});
+
+uploadArea.addEventListener('dragleave', () => {
+    uploadArea.classList.remove('dragging');
+});
+
+uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragging');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type === 'application/pdf') {
+        uploadFileObject(file);
+    } else {
+        alert('Only PDF files are supported.');
+    }
+});
+
+// ── Upload file ─────────────────────────────────────────
+function uploadFile(input) {
+    const file = input.files[0];
+    if (file) uploadFileObject(file);
+}
+
+async function uploadFileObject(file) {
+    const progress     = document.getElementById('uploadProgress');
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+
+    progress.style.display = 'block';
+    progressFill.style.width = '30%';
+    progressText.textContent = `Uploading ${file.name}...`;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch(`${API}/documents/upload`, {
+            method:  'POST',
+            headers: { 'Authorization': `Bearer ${token}` },
+            body:    formData
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            progressText.textContent = data.detail || 'Upload failed.';
+            progressFill.style.width = '0%';
+            return;
+        }
+
+        progressFill.style.width = '60%';
+        progressText.textContent  = 'Processing...';
+
+        // Poll for completion
+        await pollDocumentStatus(data.document_id);
+
+    } catch (err) {
+        progressText.textContent = 'Connection error.';
+    } finally {
+        setTimeout(() => {
+            progress.style.display   = 'none';
+            progressFill.style.width = '0%';
+            document.getElementById('fileInput').value = '';
+        }, 2000);
+    }
+}
+
+async function pollDocumentStatus(docId) {
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+        await sleep(2000);
+
+        const res  = await fetch(`${API}/documents/${docId}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+
+        if (data.status === 'ready') {
+            progressFill.style.width = '100%';
+            progressText.textContent  = '✅ Ready!';
+            loadDocuments();
+            return;
+        }
+
+        if (data.status === 'failed') {
+            progressText.textContent  = `❌ Failed: ${data.error_message || 'Unknown error'}`;
+            progressFill.style.width  = '0%';
+            loadDocuments();
+            return;
+        }
+
+        progressFill.style.width = `${60 + attempt * 1.3}%`;
+    }
+
+    progressText.textContent = 'Taking longer than expected...';
+    loadDocuments();
+}
+
+// ── Load documents ──────────────────────────────────────
+async function loadDocuments() {
+    try {
+        const res  = await fetch(`${API}/documents/`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const docs = await res.json();
+
+        if (!res.ok) {
+            if (res.status === 401) logout();
+            return;
+        }
+
+        renderDocumentList(docs);
+    } catch (err) {
+        console.error('Failed to load documents:', err);
+    }
+}
+
+function renderDocumentList(docs) {
+    const list = document.getElementById('docList');
+
+    if (!docs || docs.length === 0) {
+        list.innerHTML = `<div class="empty-docs">No documents yet.<br>Upload a PDF to get started.</div>`;
+        return;
+    }
+
+    // Store docs globally for easy access
+    window.allDocs = docs;
+
+    list.innerHTML = docs.map((doc, index) => `
+        <div class="doc-item ${currentDoc && currentDoc.id === doc.id ? 'active' : ''}"
+             onclick="selectDocumentByIndex(${index})">
+            <span class="doc-icon">${doc.status === 'ready' ? '📄' : doc.status === 'failed' ? '❌' : '⏳'}</span>
+            <span class="doc-name" title="${doc.original_name}">${doc.original_name}</span>
+            <span class="status-badge ${doc.status}">${doc.status}</span>
+            <button class="doc-delete" onclick="deleteDocument(event, ${doc.id})" title="Delete">🗑</button>
+        </div>
+    `).join('');
+}
+
+function selectDocumentByIndex(index) {
+    const doc = window.allDocs[index];
+    if (!doc) return;
+
+    if (doc.status !== 'ready') {
+        alert(`This document is ${doc.status}. ${doc.status === 'processing' ? 'Please wait.' : 'Please re-upload.'}`);
+        return;
+    }
+
+    currentDoc = doc;
+
+    // Show chat interface
+    document.getElementById('noDocSelected').style.display   = 'none';
+    const chatInterface = document.getElementById('chatInterface');
+    chatInterface.style.display = 'flex';
+
+    // Update header
+    document.getElementById('chatDocName').textContent = doc.original_name;
+    document.getElementById('chatDocMeta').textContent =
+        `${doc.chunk_count || 0} chunks · ${doc.page_count || 0} pages`;
+
+    document.getElementById('retrievalScore').style.display = 'none';
+
+    // Clear messages and load history
+    clearChat();
+    loadChatHistory(doc.id);
+    loadDocuments();
+
+    // Focus input
+    setTimeout(() => document.getElementById('questionInput').focus(), 100);
+}
+// ── Load chat history ───────────────────────────────────
+async function loadChatHistory(docId) {
+    try {
+        const res  = await fetch(`${API}/chat/${docId}/history`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data.length) return;
+
+        // Render history in reverse (oldest first)
+        const history = [...data].reverse();
+        history.forEach(entry => {
+            appendMessage('user', entry.question);
+            appendMessage('ai', entry.answer, [], entry.retrieval_score);
+        });
+
+    } catch (err) {
+        console.error('Failed to load history:', err);
+    }
+}
+
+// ── Ask question ────────────────────────────────────────
+async function askQuestion() {
+    if (!currentDoc) return;
+
+    const input    = document.getElementById('questionInput');
+    const question = input.value.trim();
+    if (!question) return;
+
+    input.value = '';
+    autoResize(input);
+
+    // Show user message
+    appendMessage('user', question);
+    document.getElementById('chatEmptyState') &&
+        (document.getElementById('chatEmptyState').style.display = 'none');
+
+    // Show typing indicator
+    const typingId = showTyping();
+
+    // Disable send button
+    const sendBtn = document.getElementById('sendBtn');
+    sendBtn.disabled = true;
+
+    try {
+        const res  = await fetch(`${API}/chat/${currentDoc.id}`, {
+            method:  'POST',
+            headers: {
+                'Content-Type':  'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ question })
+        });
+
+        const data = await res.json();
+        removeTyping(typingId);
+
+        if (!res.ok) {
+            appendMessage('ai', `Error: ${data.detail || 'Something went wrong.'}`);
+            return;
+        }
+
+        appendMessage('ai', data.answer, data.sources, data.retrieval_score);
+
+        // Update retrieval score
+        const scoreEl = document.getElementById('retrievalScore');
+        scoreEl.style.display = 'inline';
+        scoreEl.textContent   = `score: ${data.retrieval_score.toFixed(2)}`;
+
+    } catch (err) {
+        removeTyping(typingId);
+        appendMessage('ai', 'Connection error. Is the server running?');
+    } finally {
+        sendBtn.disabled = false;
+        input.focus();
+    }
+}
+
+// ── Message rendering ───────────────────────────────────
+function appendMessage(role, text, sources = [], score = null) {
+    const messages  = document.getElementById('chatMessages');
+    const emptyState = document.getElementById('chatEmptyState');
+    if (emptyState) emptyState.style.display = 'none';
+
+    const msgDiv    = document.createElement('div');
+    msgDiv.className = `message ${role}`;
+
+    const sourceHtml = sources && sources.length > 0
+        ? `<div class="message-sources">
+            ${sources.map((s, i) =>
+                `<span class="source-chip" onclick="showSources(${JSON.stringify(JSON.stringify(sources))})">${'Source ' + (i+1)}</span>`
+            ).join('')}
+           </div>`
+        : '';
+
+    msgDiv.innerHTML = `
+        <div class="message-label">${role === 'user' ? 'You' : 'DocuMind AI'}</div>
+        <div class="message-bubble">
+            ${escapeHtml(text)}
+            ${role === 'ai' ? sourceHtml : ''}
+        </div>
+    `;
+
+    messages.appendChild(msgDiv);
+    messages.scrollTop = messages.scrollHeight;
+}
+
+function showTyping() {
+    const messages = document.getElementById('chatMessages');
+    const id       = 'typing-' + Date.now();
+    const div      = document.createElement('div');
+    div.className  = 'message ai';
+    div.id         = id;
+    div.innerHTML  = `
+        <div class="message-label">DocuMind AI</div>
+        <div class="typing-indicator">
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+        </div>
+    `;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+    return id;
+}
+
+function removeTyping(id) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+}
+
+// ── Source panel ────────────────────────────────────────
+function showSources(sourcesJson) {
+    const sources = JSON.parse(sourcesJson);
+    const panel   = document.getElementById('sourcePanel');
+    const content = document.getElementById('sourcePanelContent');
+
+    content.innerHTML = sources.map((s, i) => `
+        <div class="source-item">
+            <div class="source-number">Source ${i + 1}</div>
+            ${escapeHtml(s.content)}
+        </div>
+    `).join('');
+
+    panel.classList.add('open');
+}
+
+function closeSourcePanel() {
+    document.getElementById('sourcePanel').classList.remove('open');
+}
+
+// ── Delete document ─────────────────────────────────────
+async function deleteDocument(e, docId) {
+    e.stopPropagation();
+    if (!confirm('Delete this document and all its chat history?')) return;
+
+    try {
+        const res = await fetch(`${API}/documents/${docId}`, {
+            method:  'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (res.ok) {
+            if (currentDoc && currentDoc.id === docId) {
+                currentDoc = null;
+                document.getElementById('noDocSelected').style.display  = 'flex';
+                document.getElementById('chatInterface').style.display  = 'none';
+            }
+            loadDocuments();
+        }
+    } catch (err) {
+        alert('Could not delete document.');
+    }
+}
+
+// ── Helpers ─────────────────────────────────────────────
+// Clear only the UI — don't touch DB
+function clearChat() {
+    const messages = document.getElementById('chatMessages');
+    messages.innerHTML = `
+        <div class="empty-state" id="chatEmptyState">
+            <div class="empty-state-icon">💬</div>
+            <div class="empty-state-title">Ask anything</div>
+            <div class="empty-state-sub">Ask a question about this document<br>and get an AI-powered answer.</div>
+        </div>
+    `;
+    document.getElementById('retrievalScore').style.display = 'none';
+}
+
+// Clear UI + delete all history from DB
+async function clearChatHistory() {
+    if (!currentDoc) return;
+    if (!confirm('Delete all chat history for this document?')) return;
+
+    try {
+        // Fetch all history entries
+        const res  = await fetch(`${API}/chat/${currentDoc.id}/history`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+
+        // Delete each entry
+        for (const entry of data) {
+            await fetch(`${API}/chat/${entry.id}`, {
+                method:  'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+        }
+
+        // Clear UI
+        clearChat();
+
+    } catch (err) {
+        alert('Could not clear history.');
+    }
+}
+
+function logout() {
+    localStorage.removeItem('token');
+    localStorage.removeItem('username');
+    window.location.href = 'index.html';
+}
+
+function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        askQuestion();
+    }
+}
+
+function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>');
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+</script>
+
+</body>
+</html>

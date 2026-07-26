@@ -22,11 +22,29 @@ groq_client   = Groq(api_key=settings.GROQ_API_KEY)   # ← changed
 chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DIR) 
 
 # ── FUNCTION 1: Extract text from PDF ───────────────────
-def extract_text_from_pdf(file_path: str) -> Tuple[str, int]:
-    """
-    Extract all text from PDF using PyMuPDF.
-    Returns: (full_text, page_count)
-    """
+def extract_text_from_file(file_path: str, file_ext: str):
+    """Support PDF, DOCX and TXT files"""
+
+    if file_ext == "pdf":
+        return extract_text_from_pdf(file_path)
+
+    elif file_ext == "txt":
+        with open(file_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        return text, 1
+
+    elif file_ext == "docx":
+        import docx
+        doc   = docx.Document(file_path)
+        text  = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        return text, 1
+
+    else:
+        raise ValueError(f"Unsupported file type: {file_ext}")
+def extract_text_from_pdf(file_path: str) -> tuple:
+    # Fix Windows backslash path issues
+    file_path = os.path.normpath(file_path)
+
     doc        = fitz.open(file_path)
     page_count = len(doc)
     full_text  = ""
@@ -151,12 +169,15 @@ def process_document(
     Flow:
     extract text → chunk → embed → store → update status
     """
+    file_path = os.path.normpath(file_path)
+    
     doc = db.query(Document).filter(Document.id == document_id).first()
 
     try:
         # Step 1: Extract text
         print(f"📄 [{document_id}] Extracting text...")
-        full_text, page_count = extract_text_from_pdf(file_path)
+        file_ext = file_path.split(".")[-1].lower()
+        full_text, page_count = extract_text_from_file(file_path, file_ext)
         print(f"   Extracted {len(full_text)} chars from {page_count} pages")
 
         # Step 2: Chunk
@@ -183,12 +204,27 @@ def process_document(
         print(f"✅ [{document_id}] Processing complete!")
 
     except Exception as e:
-        # Update DB — mark as failed with error message
-        print(f"❌ [{document_id}] Processing failed: {str(e)}")
+        error_msg = str(e)
+
+        # Give friendlier messages for common errors
+        if "Failed to open" in error_msg:
+            error_msg = "Could not open the file. Please try uploading again."
+        elif "No text could be extracted" in error_msg:
+            error_msg = "This PDF appears to be scanned or image-based. Please use a text-based PDF."
+        elif "No such file" in error_msg:
+            error_msg = "File not found. Please try uploading again."
+
+        print(f"❌ [{document_id}] Processing failed: {error_msg}")
         if doc:
             doc.status        = "failed"
-            doc.error_message = str(e)[:500]
+            doc.error_message = error_msg[:500]
             db.commit()
+    
+    
+    
+    
+    
+    
 
 
 # ── FUNCTION 6: Retrieve relevant chunks ────────────────

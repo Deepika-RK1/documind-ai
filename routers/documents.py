@@ -29,8 +29,12 @@ async def upload_document(
     """Upload a PDF document for processing"""
 
     # Validate file type
-    if not file.filename.endswith(".pdf"):
+    allowed = [".pdf", ".txt", ".docx"]
+    if not any(file.filename.lower().endswith(ext) for ext in allowed):
         raise InvalidFileTypeException(file.filename.split(".")[-1])
+    
+    
+    
 
     # Read file and check size
     file_bytes = await file.read()
@@ -41,7 +45,7 @@ async def upload_document(
 
     # Save file with UUID name
     unique_filename = f"{uuid.uuid4()}.pdf"
-    file_path       = os.path.join(settings.UPLOAD_DIR, unique_filename)
+    file_path = os.path.join(settings.UPLOAD_DIR, unique_filename).replace("\\", "/")
 
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     with open(file_path, "wb") as f:
